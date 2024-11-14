@@ -1,6 +1,6 @@
 # Overview
 
-This repository contains the data and scripts used for the manuscript titled "Formulating three classes of partial borrowing power priors to leverage historical data in process validation". The materials provided here aim to support the reproducibility of our findings and facilitate further research.
+This repository contains the data and scripts used for the manuscript titled **"Formulating three classes of partial borrowing power priors to leverage historical data in process validation"**. The materials provided here aim to support the reproducibility of our findings and facilitate further research.
 
 ## Table of Contents
 
