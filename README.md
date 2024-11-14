@@ -5,12 +5,9 @@ This repository contains the data and scripts used for the manuscript titled "Fo
 ## Table of Contents
 
 - [Introduction](#introduction)
-- [Files Overview](#files-overview)
+- [Files](#files-overview)
 - [Data Description](#data-description)
 - [Scripts](#scripts)
-- [Installation Instructions](#installation-instructions)
-- [Usage](#usage)
-- [License](#license)
 - [Contact](#contact)
 
 ## Introduction
@@ -21,16 +18,16 @@ This manuscript seeks to address this notable gap by exploring the formulation a
 
 To illustrate the practical applicability of these approaches, we present a simulation study based on real drug product data. This simulation aims to elucidate how our proposed methods can leverage historical data to determine the optimal number of samples per batch required to accurately characterize intra-batch variability for process performance qualification (PPQ). In particular, we underscore the capabilities of PBPP3 in quantifying the discrepancies between historical and current data through its discounting parameter, offering valuable insights for decision-making processes within pharmaceutical manufacturing.
 
-## Files Overview
+## Files
 
 This repository contains the following files:
 
 - `Data/`: Directory containing the datasets used in the analysis.
-- `Scripts/`: Directory containing the scripts for data analysis and visualization.
+- `Scripts/`: Directory containing the scripts for both modeling the motivating data sets and performing simulation.
 - `README.md`: This README file providing an overview of the project.
 
 ## Data
-This repository includes two key datasets located in the Data/ directory that are critical for the main analysis conducted in this manuscript:
+This repository includes two key datasets located in the `Data/` directory that are critical for the main analysis conducted in this manuscript:
 
 **CurrentData.rds**
 
@@ -42,16 +39,42 @@ This repository includes two key datasets located in the Data/ directory that ar
  - **Description**: This file contains historical potency data simulated from earlier development batches of the same product, it includes sassay measurements from 20 batches (B1-B20), each with 20 observations.
  - **Format**: This file is also in R's serialized format (RDS).
 
-
 ## Scripts
 
-Provide a summary of the scripts available in the `scripts/` directory. Include information on what each script does and how it relates to the data:
+This repository contains several scripts organized into different directories to facilitate the main analysis and simulations. Below is a summary of the contents:
 
-- `analysis_script.py`: Description of what this script does.
-- `visualization_script.R`: Description of what this script does.
-- ...
+### Main
+- **Main.html**: The output file containing the results and code from the main analysis.
+- **Main.Rmd**: The R Markdown file for the main analysis, which includes modeling with the motivating datasets and performs simulations.
 
-## Installation Instructions
+### RCodes
+The `RCodes` directory includes the following R scripts:
+- **Approximate_Ca0.R**: A script for approximating the normalizing factor.
+- **CreateStanData_Univ.R**: A script used for creating data in the format required by Stan.
+- **OCurve4Assay_Univ.R**: A script for generating operating characteristic (OC) curves and determining the minimum sample size.
 
-Outline any prerequisites needed to run your scripts, such as programming languages or libraries. For example:
+### StanCodes
+The `StanCodes` directory contains Stan model files for different analyses:
+- **BLMM_Current.stan**: Bayesian Linear Mixed Model (BLMM) for current data only.
+- **BLMM_Historical.stan**: BLMM for historical data only.
+- **BLMM_PartialBorrowing_Fixed_a0.stan**: BLMM modeling using PBPP1 methodology.
+- **BLMM_PartialBorrowing_Normalized_Random_a0_2.stan**: BLMM modeling employing PBPP3 methodology.
+- **BLMM_PartialBorrowing_Normalized_Random_a0_Prior_2.stan**: BLMM modeling using historical data with a discounting parameter \(a_0\).
+- **BLMM_PartialBorrowing_Unnormalized_Random_a0.stan**: BLMM modeling utilizing PBPP2.
+
+### Simulation
+The `Simulation` folder comprises:
+- **CodeToRunSimulations.R**: A script that contains the code required to run the simulations.
+- **results/**: A folder containing simulation results that are imported and plotted in `Main.Rmd`.
+- **stan/**: A folder holding the Stan files utilized for the simulations.
+
+## Contact
+
+If you have any questions, comments, or suggestions regarding this project, please feel free to reach out to me:
+
+- **Name**: Yimer Wasihun Kifle 
+- **Email**: yimerwas@gmail.com
+- **GitHub**: [GitHub Profile](https://github.com/yimerwas)
+- **LinkedIn**: [LinkedIn Profile](https://www.linkedin.com/in/yimerwas)
+
 
