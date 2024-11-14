@@ -34,13 +34,13 @@ This repository includes two key datasets located in the Data/ directory that ar
 
 **CurrentData.rds**
 
-**Description**: This file contains the current product potency data simulated from the late-stage development process, it includes assay measurements from 10 batches (B1-B10), each containing 5 observations.
-**Format**: This file is in R's serialized format (RDS), which can be easily loaded into R for further analysis.
+ - **Description**: This file contains the current product potency data simulated from the late-stage development process, it includes assay measurements from 10 batches (B1-B10), each containing 5 observations.
+ -**Format**: This file is in R's serialized format (RDS), which can be easily loaded into R for further analysis.
 
 **HistoricalData.rds**
 
-**Description**: This file contains historical potency data simulated from earlier development batches of the same product, it includes sassay measurements from 20 batches (B1-B20), each with 20 observations.
-**Format**: This file is also in R's serialized format (RDS).
+ -**Description**: This file contains historical potency data simulated from earlier development batches of the same product, it includes sassay measurements from 20 batches (B1-B20), each with 20 observations.
+ -**Format**: This file is also in R's serialized format (RDS).
 
 
 ## Scripts
