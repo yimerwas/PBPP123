@@ -1,0 +1,1646 @@
+---
+title: 'Formulating three classes of partial borrowing power priors to
+leverage historical data in process validation'
+author: "Yimer Wasihun"
+date: '`r format(Sys.time(), "%d %B %Y (%X)")`'
+output: 
+  html_document: 
+    number_sections: true
+    toc: true                     
+    toc_float: true               
+---
+
+
+
+
+```{r setup, include=FALSE}
+# Clear the workspace by removing all objects
+rm(list = ls(all = TRUE))
+
+# Set knitr chunk options for all code chunks
+knitr::opts_chunk$set(
+  echo     = TRUE,   # Don't display the code
+  warning  = FALSE,   # Suppress warnings
+  message  = FALSE,   # Suppress messages
+  eval     = TRUE,    # Evaluate the code
+  include  = TRUE,    # Include the chunk in the output
+  dev      = "tiff",  # Use TIFF format for device output
+  fig.ext  = ".tiff", # Set figure file extension
+  dpi      = 500,     # Set dots per inch for the output
+  cache    = TRUE     # Enable caching for faster execution
+)
+
+# Set global options
+options(max.print = 999999) # Set maximum number of printed items
+
+seedNum=1234567890
+```
+
+
+
+```{r}
+# ===================================================
+# Load Required Libraries (Installing if necessary)
+# ===================================================
+
+# Define a character vector of required packages
+required_packages <- c("readxl", "tidyverse", "ggplot2", 
+                       "rstan", "brms", "shinystan", "plyr", 
+                       "glue", "broom", "lme4", "tolerance", 
+                       "tidyr", "broom.mixed", "MCMCglmm", 
+                       "car", "stringr", "openxlsx", 
+                       "gridExtra", "npowerPrioR", 
+                       "zoo", "flextable", "officer", 
+                       "ddpcr", "mgcv")
+
+# Install and load packages
+invisible(sapply(required_packages, function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)
+}))
+```
+
+
+```{r, include=FALSE}
+# ===================================================
+# Bayesian Implementation Setup
+# ===================================================
+
+# Configure rstan options
+rstan_options(auto_write = TRUE)
+options(max.print = 200000, mc.cores = parallel::detectCores())
+
+
+# Define tolerance interval parameters
+Betat  <- 0.99  # Coverage
+Gammat <- 0.95  # Confidence
+
+# ===================================================
+# Assay Specification Limits
+# ===================================================
+
+specs <- c(95.0, 105.0)  # Specification limits for assay
+
+# ===================================================
+# Functions
+# ===================================================
+
+# Round numbers to a specified number of decimal places
+round2 <- function(x, n) {
+  posneg <- sign(x)
+  z <- abs(x) * 10^n
+  z <- trunc(z + 0.5 + sqrt(.Machine$double.eps)) / 10^n
+  return(z * posneg)   
+}
+
+
+
+#=========================================
+# A function for Shinystan non-blocking
+launch_shinystan_nonblocking <- function(fit) {
+  library(future)
+  plan(multisession)
+  future(
+    launch_shinystan(fit) 
+  )
+}
+
+# ===================================================
+# Source External R Scripts
+# ===================================================
+
+scripts <- c("OCurve4Assay_Univ.R", "CreateStanData_Univ.R", "Approximate_Ca0.R")
+
+lapply(scripts, function(script) source(file.path("RCodes", script)))
+
+```
+
+
+
+# Instructions
+
+This R Markdown Document (RMD) is designed to accompany the manuscript provided in a separate PDF file. Each section of the RMD corresponds to a specific section of the manuscript (which contains detailed descriptions, discussions, and findings).
+
+As you work through the RMD, please refer to the PDF for comprehensive details regarding each section. The RMD contains only the code and essential outputs needed to reproduce the analyses presented in the manuscript.
+
+We encourage you to cross-reference the contents of the RMD with the PDF to enhance your understanding of the methodologies employed in this research.
+
+Please be aware that, depending on the operating system, the version of R, and any updates to the packages used, there may be slight variations in the results obtained, especially after the decimal point. However, these differences are not expected to be significant and should not impact the overall conclusions. Based on the information derived from the sessionInfo(), our results are based on R version 4.4.1, which was released on June 14, 2024. This version operates on a 64-bit architecture designed specifically for the x86_64-pc-linux-gnu platform. Additionally, R is running on Red Hat Enterprise Linux version 9.4 (Plow).
+
+
+# Motivating data sets
+
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 2 of the manuscript, where relevant figures are also incorporated.**
+
+
+
+```{r}
+# ==================================================
+# Importing the Data Sets
+# ==================================================
+historical_data_path <- "../Data/HistoricalData.rds" 
+current_data_path <- "../Data/CurrentData.rds"
+
+PrePPQ0_Sim <- readRDS(historical_data_path)
+PrePPQ_Sim <- readRDS(current_data_path)
+
+# ==================================================
+# Summarizing and Capturing Data Structures
+# ==================================================
+summarize_data <- function(data, title) {
+  summary_table <- data %>%
+    dplyr::group_by(Batch) %>%
+    dplyr::summarize(
+      Observations = n(),
+      Mean = round2(mean(Assay_API1), 1),
+      SD = round2(sd(Assay_API1), 2),
+      `Mean (SD)` = glue("{round2(mean(Assay_API1), 1)} ({round2(sd(Assay_API1), 2)})"),
+      Minimum = round2(min(Assay_API1), 1),
+      Maximum = round2(max(Assay_API1), 1)
+    ) %>%
+    select(Batch, Observations, `Mean (SD)`, Minimum, Maximum)
+
+  set_caption(flextable(summary_table)%>%autofit(), title, autonum = run_autonum(seq_id = "tab", bkm_all = TRUE))
+}
+
+summarize_data(PrePPQ0_Sim, "The historical assay data structure")
+summarize_data(PrePPQ_Sim, "The current assay data structure")
+```
+
+
+
+
+
+```{r}
+# ==================================================
+# Visualizing the Assay Data Over Batches (Figures 1 & 2)
+# ==================================================
+visualize_assay_data <- function(data, title, file_name) {
+  assay_lines <- data.frame(hlines = c(95.0, 105.0))
+
+  plot <- data %>%
+    ggplot(aes(x = Batch, y = round2(Assay_API1, 1), group = Batch, col = Batch)) +
+    geom_jitter(width = 0.2, height = 0) +
+    stat_summary(fun = mean, geom = "point", shape = 18, size = 4, color = "red", position = position_dodge(width = 0.2)) +
+    geom_hline(aes(yintercept = hlines), assay_lines, color = "red", linetype = "dashed") +
+    theme_bw() +
+    labs(x = "Batch", y = "Assay (% label claim)", title = title) +
+    theme(
+      axis.ticks = element_blank(),
+      axis.text.x = element_text(angle = 0, hjust = 1, vjust = 0.5),
+      text = element_text(size = 16),
+      strip.text.x = element_text(size = 14),
+      legend.position = "none"
+    )
+
+  pdf(file = file_name, width = 10, height = 6)
+  print(plot)
+  dev.off()
+}
+
+# Historical data (Figure 1)
+visualize_assay_data(PrePPQ0_Sim, 
+                     "Historical data",
+                     "Figures/Fig01.pdf")
+
+# Current data (Figure 2)
+visualize_assay_data(PrePPQ_Sim, 
+                     "Current data", 
+                     "Figures/Fig02.pdf")
+
+```
+
+
+
+# Bayesian linear mixed model formulation
+
+## Sensitivity analysis for weakly informative and non-informative priors
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 3.2 of the manuscript, where relevant figures are also incorporated.**
+
+```{r}
+#=======================================================
+# Priors for Process Mean and Variance Parameters (Figure 3)
+#=======================================================
+
+# Function to compute density plots for weakly informative (WI) and non-informative (NI) priors
+create_density_plot <- function(mu, sigma, nu, x_range, title, seedNum) {
+  # Create a sequence of values
+  x <- seq(x_range[1], x_range[2], length.out = 1000)
+  
+  # Compute the density values for weakly informative (WI) and non-informative (NI) distributions
+  
+  
+  density_WI <- dt((x - mu) / sigma[1], df = nu) / sigma[1]
+  density_NI <- dt((x - mu) / sigma[2], df = nu) / sigma[2]
+  
+  # Create a data frame for plotting
+  data <- data.frame(
+    x = rep(x, 2),
+    density = c(density_WI, density_NI),
+    Prior = factor(rep(c("WI", "NI"), each = length(x)))
+  )
+  
+  # Generate the plot
+  ggplot(data, aes(x = x, y = density, color = Prior)) +
+    geom_line(linewidth = 1) +
+    labs(title = title, x = "", y = "Density") +
+    theme_bw()
+}
+
+# Parameters for process mean
+nu_mean <- 3
+mu_mean <- 100
+sigma_mean <- c(2.5, 100)
+title_mean <- "Priors for Process Mean"
+
+# Parameters for variance parameters
+nu_var <- 3
+mu_var <- 0
+sigma_var <- c(2.5, 100)
+title_var <- "Priors for Intra-batch and Inter-batch Variability"
+
+# Create the plots
+Priors4PM <- create_density_plot(mu_mean, sigma_mean, nu_mean, c(90, 110), title_mean, seedNum=seedNum)
+Priors4VarPars <- create_density_plot(mu_var, sigma_var, nu_var, c(0, 10), title_var, seedNum=seedNum)
+
+# Save plots
+pdf(file = "Figures/Fig03.pdf", width = 9, height = 4)
+grid.arrange(Priors4PM, Priors4VarPars, nrow=1)
+dev.off()
+```
+
+
+# Three classes of partial borrowing power prior 
+
+## Sensitivity analysis of discounting parameter
+
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 4.4 of the manuscript, where relevant figure is also incorporated.**
+
+
+```{r}
+#=======================================================
+# Priors for a0 (Figure 4)
+#=======================================================
+
+# Set seed for reproducibility
+set.seed(seedNum)
+
+# Specify a range of values for a0 between 0 and 1
+a0 <- seq(0, 1, by = 0.01)
+
+# Draw beta distributed values
+beta_params <- list(c(1, 1), c(5, 5), c(10, 10), c(50, 20))
+colors <- c(2, 4, 6, 7)  # Color codes for plotting
+
+# Calculate densities
+y_dbeta <- sapply(beta_params, function(params) dbeta(a0, params[1], params[2]))
+
+# Prepare the PDF for output
+pdf(file = "Figures/Fig04.pdf")
+
+# Plot the beta densities
+plot(a0, y_dbeta[, 1], 
+     xlim = c(0, 1), ylim = c(0, 8), type = "l", col = colors[1],
+     main = "Priors for a0", ylab = "Density")
+
+# Add additional lines for other beta distributions
+for (i in 2:length(colors)) {
+  lines(a0, y_dbeta[, i], col = colors[i])
+}
+
+# Add a legend
+legend(0.2, 8, col = colors, lty = 1,
+       legend = c("a0 ~ Beta(1,1)",
+                  "a0 ~ Beta(5,5)", 
+                  "a0 ~ Beta(10,10)", 
+                  "a0 ~ Beta(50,20)"))
+
+# Close the PDF device
+dev.off()
+```
+
+
+
+# Results
+
+## Sensitivity analysis for weakly informative and non-informative priors
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 8.1 of the manuscript, where relevant figures are also incorporated.**
+
+```{r}
+
+#===========================================
+# ===> Bayesian Modeling: Global Parameters
+#===========================================
+nsims <- 20000      # Number of simulations
+nburn <- 10000      # Number of burn-in iterations
+nthin <- 10         # Thinning interval
+nchains <- 3       # Number of chains
+
+
+
+#===========================================
+# ===> Model with Non-Informative Prior
+#===========================================
+# Uncomment the next block to define and fit the model
+
+# NonInformativePrior <- c(
+#   set_prior("student_t(3, 100, 100)", class = "Intercept", lb = 0),
+#   set_prior("student_t(3, 0, 100)", class = "sd", lb = 0),
+#   set_prior("student_t(3, 0, 100)", class = "sd", group = "Batch", lb = 0),
+#   set_prior("student_t(3, 0, 100)", class = "sigma", lb = 0)
+# )
+# BLMM_NI <- brm(
+#   Assay_API1 ~ 1 + (1 | Batch),
+#   data = PrePPQ0_Sim,
+#   family = "gaussian",
+#   prior = NonInformativePrior,
+#   chains = nchains,
+#   iter = nsims,
+#   warmup = nburn,
+#   thin = nthin,
+#   control = list(max_treedepth = 15, adapt_delta = 0.99),
+#   seed =seedNum,
+#   sample_prior = TRUE
+# )
+# saveRDS(BLMM_NI, "Results/BLMM_NI.rds")
+
+
+#===========================================
+# ===> Model with Weakly-Informative Prior
+#===========================================
+# Uncomment the next block to define and fit the model
+
+# WeaklyInformativePrior <- c(
+#   set_prior("student_t(3, 100, 2.5)", class = "Intercept", lb = 0),
+#   set_prior("student_t(3, 0, 2.5)", class = "sd", lb = 0),
+#   set_prior("student_t(3, 0, 2.5)", class = "sd", group = "Batch", lb = 0),
+#   set_prior("student_t(3, 0, 2.5)", class = "sigma", lb = 0)
+# )
+# BLMM_WI <- brm(
+#   Assay_API1 ~ 1 + (1 | Batch),
+#   data = PrePPQ0_Sim,
+#   family = "gaussian",
+#   prior = WeaklyInformativePrior,
+#   chains = nchains,
+#   iter = nsims,
+#   warmup = nburn,
+#   thin = nthin,
+#   control = list(max_treedepth = 15, adapt_delta = 0.99),
+#   seed = seedNum,
+#   sample_prior = TRUE
+# )
+# saveRDS(BLMM_WI, "Results/BLMM_WI.rds")
+
+
+# Read saved Bayesian objects
+BLMM_NI <- readRDS("Results/BLMM_NI.rds")
+BLMM_WI <- readRDS("Results/BLMM_WI.rds")
+
+# Uncomment the following lines to display shinystan
+# launch_shinystan_nonblocking(BLMM_NI)
+# launch_shinystan_nonblocking(BLMM_WI)
+```
+
+
+```{r}
+# Extract the priors and posteriors for the specified parameters
+prior_samples_NI <- prior_draws(BLMM_NI)
+names(prior_samples_NI) <- c("b_Intercept", "sigma", "sd_Batch__Intercept")
+
+prior_samples_WI <- prior_draws(BLMM_WI)
+names(prior_samples_WI) <- c("b_Intercept", "sigma", "sd_Batch__Intercept")
+
+posterior_samples_NI <- as.data.frame(as_draws_df(BLMM_NI))[, c("b_Intercept", "sd_Batch__Intercept", "sigma")]
+posterior_samples_WI <- as.data.frame(as_draws_df(BLMM_WI))[, c("b_Intercept", "sd_Batch__Intercept", "sigma")]
+
+# Combine the samples for the weakly informative and non-informative priors
+combined_prior_samples <- rbind(
+  cbind(prior_samples_NI, type = "NI Prior"),
+  cbind(prior_samples_WI, type = "WI Prior"))
+
+combined_posterior_samples <- rbind(
+  cbind(posterior_samples_NI, type = "Posterior with NI"),
+  cbind(posterior_samples_WI, type = "Posterior with WI"))
+
+# Create a combined data frame for plotting
+combined_samples <- rbind(combined_prior_samples, combined_posterior_samples)
+```
+
+
+```{r}
+# Density plot for Process Mean (b_Intercept)
+PostPM_WI_NI <- ggplot() +
+  geom_density(aes(x = b_Intercept, y = ..scaled.., fill = type), 
+               data = combined_samples %>% 
+                 filter(type %in% c("Posterior with NI", "Posterior with WI")), alpha = 0.5) +
+  labs(title = "Process Mean", x = expression(beta[0*0]), y = "Density") +
+  scale_fill_manual(values = c("yellow", "red")) +
+  theme_bw() +
+  guides(fill = guide_legend(title = NULL))
+```
+
+
+```{r}
+# Density plot for Inter-Batch Variability
+PostInterBatch_WI_NI <- ggplot() +
+  geom_density(aes(x = sd_Batch__Intercept, y = ..scaled.., fill = type), data = combined_samples %>% 
+                 filter(type %in% c("Posterior with NI", "Posterior with WI")), alpha = 0.5) +
+  labs(title = "Inter-Batch Variability", x = expression(sigma[b0]), y = "Density") +
+  scale_fill_manual(values = c("yellow", "red")) +
+  theme_bw() +
+  guides(fill = guide_legend(title = NULL))
+```
+
+
+```{r}
+# Density plot for Intra-Batch Variability
+PostIntraBatch_WI_NI <- ggplot() +
+  geom_density(aes(x = sigma, y = ..scaled.., fill = type), 
+               data = combined_samples %>% 
+                 filter(type %in% c("Posterior with NI", "Posterior with WI")), alpha = 0.5) +
+  labs(title = "Intra-Batch Variability", x = expression(sigma[0]), y = "Density") +
+  scale_fill_manual(values = c("yellow", "red")) +
+  theme_bw() +
+  guides(fill = guide_legend(title = NULL))
+```
+
+
+```{r}
+#=============================================================
+# Save the plots to a PDF (Figure 5)
+pdf(file = "Figures/Fig05.pdf", width = 9, height = 5)
+grid.arrange(PostPM_WI_NI, PostInterBatch_WI_NI, PostIntraBatch_WI_NI, nrow = 2)
+dev.off()
+```
+
+
+## Modeling historical and current data separately
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 8.2 of the manuscript, where relevant figures and tables are also incorporated.**
+
+```{r}
+# FYI: In this chunk, the historical data and current data are fitted separately using brms package to get standata out of them
+
+# ================================================================
+# Fitting Historical and Current Data with brms
+# ================================================================
+
+# ===> Settings for Model Fitting
+nsims <- 20000      # Number of simulations
+nburn <- 10000      # Number of burn-in iterations
+nthin <- 10         # Thinning interval
+nchains <- 3       # Number of chains
+
+# ================================================================
+# Fitting Historical Data
+# ================================================================
+
+# Uncomment the next block to define and fit the model for historical data
+
+# PrePPQ0_Sim_API1 <- brm(
+#   Assay_API1 ~ 1 + (1 | Batch),
+#   data = PrePPQ0_Sim,
+#   chains = nchains,
+#   iter = nsims,
+#   warmup = nburn,
+#   thin = nthin,
+#   control = list(max_treedepth = 15, adapt_delta = 0.99),
+#   seed = seedNum
+# )
+# saveRDS(PrePPQ0_Sim_API1, "Results/PrePPQ0_Sim_API1.rds")
+
+# Read saved Bayesian object for historical data
+PrePPQ0_Sim_API1 <- readRDS("Results/PrePPQ0_Sim_API1.rds")
+
+# ===> Extract Posterior Samples for Historical Data
+PostSamp_PrePPQ0_Sim_API1 <- as.data.frame(as_draws_df(
+  x = PrePPQ0_Sim_API1, 
+  variable = c("b_Intercept", "sd_Batch__Intercept", "sigma")
+))[1:3]
+
+# ================================================================
+# Fitting Current Data
+# ================================================================
+
+# Uncomment the next block to define and fit the model for current data
+
+# PrePPQ_Sim_API1 <- brm(
+#   Assay_API1 ~ 1 + (1 | Batch),
+#   data = PrePPQ_Sim,
+#   chains = nchains,
+#   iter = nsims,
+#   warmup = nburn,
+#   thin = nthin,
+#   control = list(max_treedepth = 15, adapt_delta = 0.99),
+#   seed = seedNum
+# )
+# saveRDS(PrePPQ_Sim_API1, "Results/PrePPQ_Sim_API1.rds")
+
+# Read saved Bayesian object for current data
+PrePPQ_Sim_API1 <- readRDS("Results/PrePPQ_Sim_API1.rds")
+
+# ===> Extract Posterior Samples for Current Data
+PostSamp_PrePPQ_Sim_API1 <- as.data.frame(as_draws_df(
+  x = PrePPQ_Sim_API1, 
+  variable = c("b_Intercept", "sd_Batch__Intercept", "sigma")
+))[1:3]
+
+# Uncomment the following lines to display shinystan summaries
+# launch_shinystan_nonblocking(PrePPQ0_Sim_API1)
+# launch_shinystan_nonblocking(PrePPQ_Sim_API1)
+
+```
+
+
+
+
+```{r}
+
+# ===================================================
+# Fitting rstan Model Based on Historical Data
+# ===================================================
+
+# Uncomment the block below to define, fit and save the model
+
+# StanData_Hist <- standata(PrePPQ0_Sim_API1)
+# StanModel_Hist <- stan(
+#   file = "StanCodes/BLMM_Historical.stan",
+#   data = StanData_Hist,
+#   iter = nsims,
+#   warmup = nburn,
+#   thin = nthin,
+#   chains = nchains,
+#   verbose = FALSE,
+#   seed = seedNum
+# )
+# saveRDS(StanModel_Hist, "FittedModelsInRstan/StanModel_Hist.rds")
+
+# ===> Read saved Bayesian model object
+StanModel_Hist <- readRDS("FittedModelsInRstan/StanModel_Hist.rds")
+
+# To visualize the results, uncomment the line below
+# launch_shinystan_nonblocking(StanModel_Hist)
+
+# Extract Posterior Samples from the fitted model
+PosteriorSamples_Hist <- rstan::extract(StanModel_Hist)
+```
+
+
+```{r}
+# ===================================================
+# Fitting Stan Model Based on Current Data
+# ===================================================
+# ===> Settings for Model Fitting
+nsims <- 20000      # Number of simulations
+nburn <- 10000      # Number of burn-in iterations
+nthin <- 10         # Thinning interval
+nchains <- 3       # Number of chains
+
+# ===> Uncomment the block below to define and fit the model
+
+# StanData_Current <- standata(PrePPQ_Sim_API1)
+# StanModel_Current <- stan(
+#   file = "StanCodes/BLMM_Current.stan",
+#   data = StanData_Current,
+#   iter = nsims,
+#   warmup = nburn,
+#   thin = nthin,
+#   chains = nchains,
+#   verbose = FALSE,
+#   seed = seedNum
+# )
+# saveRDS(StanModel_Current, "FittedModelsInRstan/StanModel_Current.rds")
+
+# ===> Read saved Bayesian model object
+StanModel_Current <- readRDS("FittedModelsInRstan/StanModel_Current.rds")
+
+# To visualize the results, uncomment the line below
+# launch_shinystan_nonblocking(StanModel_Current)
+
+# Extract Posterior Samples from the fitted model
+PosteriorSamples_Current <- rstan::extract(StanModel_Current)
+```
+
+
+
+```{r}
+# Combine Historical and Current Stan Models
+PrePPQ_Sim_API1_NonePower <- list(StanModel_Hist, StanModel_Current)
+
+# ===> Uncomment the block below to generate O-Curves and Point of Sensitivity Samples
+
+# PrePPQ_Sim_API1_NonePower_OCurvesAll <- list()
+# PrePPQ_Sim_API1_NonePower_PoSMinimumSample <- c()
+# for(i in 1:length(PrePPQ_Sim_API1_NonePower)){
+#   # Calculate O-Curves
+#   OCurve4Assay_Univ_Results <- OCurve4Assay_Univ(
+#     StanModel = PrePPQ_Sim_API1_NonePower[[i]],
+#     ModelName = paste0("StanModel_NonePower_",
+#                        c("Historical", "Current")[i]),
+#     SampleSize = c(3:40),
+#     Specs = c(95.0, 105.0),
+#     Confidence = 0.95,
+#     Coverage = 0.99,
+#     SeedNum = seedNum
+#   )
+# 
+# PrePPQ_Sim_API1_NonePower_OCurvesAll[[i]] = OCurve4Assay_Univ_Results[[1]]
+# PrePPQ_Sim_API1_NonePower_PoSMinimumSample[i] =  OCurve4Assay_Univ_Results[[2]]
+# }
+
+# ===> Save Results 
+# saveRDS(PrePPQ_Sim_API1_NonePower_OCurvesAll, "Results/PrePPQ_Sim_API1_NonePower_OCurvesAll.rds")
+# saveRDS(PrePPQ_Sim_API1_NonePower_PoSMinimumSample, "Results/PrePPQ_Sim_API1_NonePower_PoSMinimumSample.rds")
+
+
+# ===> Read saved results
+PrePPQ_Sim_API1_NonePower_OCurvesAll <- readRDS("Results/PrePPQ_Sim_API1_NonePower_OCurvesAll.rds")
+PrePPQ_Sim_API1_NonePower_PoSMinimumSample <- readRDS("Results/PrePPQ_Sim_API1_NonePower_PoSMinimumSample.rds")
+
+```
+
+
+
+```{r}
+
+#==================================================================
+# Save O-Curves as PDF
+pdf(file = "Figures/Fig06.pdf", 
+    width = 14, 
+    height = 6)
+grid.arrange(grobs = PrePPQ_Sim_API1_NonePower_OCurvesAll[1:2], nrow = 1)
+dev.off()
+
+```
+
+```{r}
+#==================================================================
+# Function to Compute Posterior Summary Statistics from Models
+ComputePostSummary <- function(ListOfModels) {
+  # Initialize lists to hold summary measures
+  summary_measures <- list()
+  
+  # Iterate through each model in the list
+  for (i in 1:length(ListOfModels)) {
+    PostSamples <- extract(ListOfModels[[i]])
+    
+    # Compute measures for the intercept
+    intercept_stats <- round(c(mean(PostSamples$Intercept), 
+                               sd(PostSamples$Intercept), 
+                               quantile(PostSamples$Intercept, probs = c(0.025, 0.975))), 1)
+    
+    # Compute measures for sigma
+    sigma_stats <- round(c(median(PostSamples$sigma), 
+                           sd(PostSamples$sigma), 
+                           quantile(PostSamples$sigma, probs = c(0.025, 0.975))), 2)
+    
+    # Compute measures for standard deviation of beta
+    sd_b_stats <- round(c(median(PostSamples$sd_b), 
+                          sd(PostSamples$sd_b), 
+                          quantile(PostSamples$sd_b, probs = c(0.025, 0.975))), 2)
+    
+    # Combine results
+    summary_measures[[i]] <- data.frame(
+      Process_mean = intercept_stats,
+      Within_batch_SD = sigma_stats,
+      Between_batch_SD = sd_b_stats
+    )
+  }
+
+  # Bind results into a single data frame
+  summary_results <- do.call(rbind, summary_measures)
+  return(summary_results)
+}
+
+# Selection of Minimum Sample Sizes (Inf means >40)
+SampleSizeSel <- c()
+for (i in 1:length(PrePPQ_Sim_API1_NonePower)) {
+  min_sample_size <- PrePPQ_Sim_API1_NonePower_PoSMinimumSample[i]
+  SampleSizeSel <- c(SampleSizeSel, ifelse(is.infinite(min_sample_size), ">40", min_sample_size))
+}
+
+# Create the Model Summary Data Frame
+ModelSummary <- ComputePostSummary(PrePPQ_Sim_API1_NonePower)
+
+
+# Combine everything into a final summary table
+final_summary <- data.frame(
+  Model = unlist(lapply(c("Historical", "Current"), function(x) c(x, NA, NA, NA))),
+  Term = rep(c("Estimate", "SD", "Lower", "Upper"), times = length(PrePPQ_Sim_API1_NonePower)),
+  Process_mean = c(ModelSummary$Process_mean),
+  Within_batch_SD = c(ModelSummary$Within_batch_SD),
+  Between_batch_SD = c(ModelSummary$Between_batch_SD),
+  Sample_size_n =  unlist(lapply(SampleSizeSel, function(x) c(x, NA, NA, NA)))
+)
+
+# Set caption for the table summarizing the models
+set_caption(flextable(final_summary), "The posterior summary statistics and the estimated number of samples for historical and current data", autonum = run_autonum(seq_id = "tab", bkm_all = TRUE))
+```
+
+
+
+
+## Leveraging historical data using PBPP1
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 8.3 of the manuscript, where relevant figures and tables are also incorporated.**
+
+```{r}
+#==================================================================
+nsims <- 20000      # Number of simulations
+nburn <- 10000      # Number of burn-in iterations
+nthin <- 10         # Thinning interval
+nchains <- 3       # Number of chains
+#==================================================================
+#===> Fitting Multiple Models for different a0
+#==================================================================
+
+# Define the vector of a0 values
+a0 <- seq(0.0, 1.0, by = 0.1)
+
+# Uncomment the following block to fit models for each value of a0
+
+# StanModel_Fixed_a0 <- vector("list", length(a0))
+# for (i in seq_along(a0)) {
+#   StanData <- CreateStanData_Univ(
+#     BrmsModel_Historical = PrePPQ0_Sim_API1,
+#     BrmsModel_Current = PrePPQ_Sim_API1,
+#     a0 = a0[i],
+#     random = FALSE
+#   )
+#   StanModel_Fixed_a0[[i]] <- stan(
+#     file = "StanCodes/BLMM_PartialBorrowing_Fixed_a0.stan",
+#     data = StanData,
+# iter = nsims,
+# warmup = nburn,
+# thin = nthin,
+# chains = nchains,
+# seed = seedNum
+#   )
+# }
+# saveRDS(StanModel_Fixed_a0, "FittedModelsInRstan/StanModel_Fixed_a0.rds")
+
+# Load the saved Bayesian object with fitted models
+PrePPQ_Sim_API1_Fixed_a0 <- readRDS("FittedModelsInRstan/StanModel_Fixed_a0.rds")
+
+# To check each model diagnostics, uncomment the line below, 
+# launch_shinystan_nonblocking(PrePPQ_Sim_API1_Fixed_a0[[11]])
+
+#==================================================================
+#===> Posterior Summary Measures and Visualization
+#==================================================================
+
+# Uncomment the following block to compute posterior summaries and visualizations
+
+# PrePPQ_Sim_API1_Fixed_a0_OCurvesAll <- vector("list", length(a0))
+# PrePPQ_Sim_API1_Fixed_a0_PoSMinimumSample <- vector("list", length(a0))
+# for (i in seq_along(a0)) {
+#   model_name <- paste0("StanModel_Fixed_a0_", a0[i])
+#   results <- OCurve4Assay_Univ(
+#     StanModel = PrePPQ_Sim_API1_Fixed_a0[[i]],
+#     ModelName = model_name,
+#     SampleSize = c(3:40),
+#     Specs = c(95.0, 105.0),
+#     Confidence = 0.95,
+#     Coverage = 0.99,
+#     SeedNum = seedNum
+#   )
+#   PrePPQ_Sim_API1_Fixed_a0_OCurvesAll[[i]] <- results[[1]]
+#   PrePPQ_Sim_API1_Fixed_a0_PoSMinimumSample[[i]] <- results[[2]]
+# }
+
+# saveRDS(PrePPQ_Sim_API1_Fixed_a0_OCurvesAll, "Results/PrePPQ_Sim_API1_Fixed_a0_OCurvesAll.rds")
+# saveRDS(PrePPQ_Sim_API1_Fixed_a0_PoSMinimumSample, "Results/PrePPQ_Sim_API1_Fixed_a0_PoSMinimumSample.rds")
+
+# Load pre-computed results
+PrePPQ_Sim_API1_Fixed_a0_OCurvesAll <- readRDS("Results/PrePPQ_Sim_API1_Fixed_a0_OCurvesAll.rds")
+PrePPQ_Sim_API1_Fixed_a0_PoSMinimumSample <- readRDS("Results/PrePPQ_Sim_API1_Fixed_a0_PoSMinimumSample.rds")
+```
+
+
+```{r}
+#==================================================================
+# See in Appendix
+pdf(file = "Figures/Fig15.pdf", width = 16, height=14)
+grid.arrange(grobs = PrePPQ_Sim_API1_Fixed_a0_OCurvesAll[1:11], nrow=4)
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+```{r}
+#====> A function to compute the posterior summaries of model parameters
+ComputePostSummary2 <- function(ListOfModels){
+  PostSamples=Intercept_0_Measures=Sd_b_0_Measures=Intercept_Measures=Sigma_Measures=Sd_b_Measures=NULL
+ for(i in 1:(length(ListOfModels))){
+   PostSamples=extract(ListOfModels[[i]])
+   
+   Intercept_0_Measures <- c(Intercept_0_Measures, round(c(mean(PostSamples$Intercept_0), sd(PostSamples$Intercept_0),quantile(PostSamples$Intercept_0, probs = c(0.025, 0.975))),1))
+   
+      Sd_b_0_Measures <- c(Sd_b_0_Measures, round( c(median(PostSamples$sd_b_0), sd(PostSamples$sd_b_0),quantile(PostSamples$sd_b_0, probs = c(0.025, 0.975))),2))
+
+   
+      Intercept_Measures <- c(Intercept_Measures, round(c(mean(PostSamples$Intercept), sd(PostSamples$Intercept),quantile(PostSamples$Intercept, probs = c(0.025, 0.975))),1))
+
+   
+   Sigma_Measures <- c(Sigma_Measures, round( c(median(PostSamples$sigma), sd(PostSamples$sigma), quantile(PostSamples$sigma, probs = c(0.025, 0.975))),2))
+   
+   Sd_b_Measures <- c(Sd_b_Measures, round( c(median(PostSamples$sd_b), sd(PostSamples$sd_b), quantile(PostSamples$sd_b, probs = c(0.025, 0.975))),2))
+   
+ } 
+  return(cbind(c(Intercept_0_Measures), c(Sd_b_0_Measures), c(Intercept_Measures), c(Sigma_Measures), c(Sd_b_Measures)))
+}
+
+
+SampleSizeSel <- c()
+for(i in 1:length(a0)){
+  SampleSizeSel <- c(SampleSizeSel, PrePPQ_Sim_API1_Fixed_a0_PoSMinimumSample[[i]])
+  }
+
+
+ModelSummary <- cbind.data.frame(
+  Model=unlist(lapply(paste0("a0=", a0), function(x) c(x, NA, NA, NA))),
+  Term = rep(c("Estimate", "SD", "Lower", "Upper"), times = length(a0)),
+  ComputePostSummary2(PrePPQ_Sim_API1_Fixed_a0), 
+  SampleSize = unlist(lapply(SampleSizeSel, function(x) c(x, NA, NA, NA))))
+names(ModelSummary) <- c("Model", "Term", "Intercept_0", "Sd_b_0", "Intercept", "Sigma", "Sd_b", "SampleSize")
+
+
+set_caption(flextable(ModelSummary), "The posterior summary statistics and the estimated number of samples for BLMM model using PBPP1", autonum = run_autonum(seq_id = "tab", bkm_all=TRUE))
+
+
+
+ 
+```
+
+```{r, fig.asp=0.6, fig.width=3}
+
+pdf(file = "Figures/Fig07.pdf")
+plot(a0, SampleSizeSel, xlab="Fixed values for discounting parameter a0", ylab="Minimum sample size for PPQ")
+lines(a0, SampleSizeSel, col=2)
+dev.off()
+```
+
+
+
+## Leveraging historical data using PBPP2
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 8.4 of the manuscript, where relevant figures and tables are also incorporated.**
+
+```{r}
+#==================================================================
+nsims <- 20000      # Number of simulations
+nburn <- 10000      # Number of burn-in iterations
+nthin <- 10         # Thinning interval
+nchains <- 3       # Number of chains
+
+#==================================================================
+#===> Fitting several stan models for random a0 a0Int=c(beta(1, 1), beta(5, 5), beta(10, 10), c(50, 20))
+#==================================================================
+
+a0Int=list(c(1, 1), c(5, 5), c(10, 10), c(50,20))
+
+# StanModel_Unnormalized_Random_a0 <- list()
+# for(i in 1:length(a0Int)){
+#   StanData <- CreateStanData_Univ(BrmsModel_Historical=PrePPQ0_Sim_API1, BrmsModel_Current=PrePPQ_Sim_API1, a0=a0Int[[i]], random=TRUE)
+#   StanModel_Unnormalized_Random_a0[[i]] <- stan(file = "StanCodes/BLMM_PartialBorrowing_Unnormalized_Random_a0.stan",
+#                                                 data=StanData,
+#                                                 iter = nsims,
+#                                                 warmup=nburn,
+#                                                 thin=nthin,
+#                                                 chains=nchains,
+#                                                 verbose = FALSE,
+#                                                 seed =  seedNum)
+# }
+# saveRDS(StanModel_Unnormalized_Random_a0, "FittedModelsInRstan/StanModel_Unnormalized_Random_a0.rds")
+
+
+### read saved Bayesian object:
+PrePPQ_Sim_API1_Unnormalized_Random_a0 <- readRDS("FittedModelsInRstan/StanModel_Unnormalized_Random_a0.rds")
+
+
+#==================================================================
+#===> Posterior summary measures and visualization
+#==================================================================
+# PrePPQ_Sim_API1_Unnormalized_Random_a0_OCurvesAll <- list()
+# PrePPQ_Sim_API1_Unnormalized_Random_a0_PoSMinimumSample <- list()
+# for(i in 1:length(a0Int)){
+#   OCurve4Assay_Univ_Results <- OCurve4Assay_Univ(StanModel=PrePPQ_Sim_API1_Unnormalized_Random_a0[[i]], ModelName=paste0(paste0("Unnormalized_Random_a0~Beta(", paste(a0Int[[i]], collapse = ';'), sep=""),")"),   SampleSize = c(3:40),
+#     Specs = c(95.0, 105.0),
+#     Confidence = 0.95,
+#     Coverage = 0.99,
+#     SeedNum = seedNum)
+# PrePPQ_Sim_API1_Unnormalized_Random_a0_OCurvesAll[[i]] <- OCurve4Assay_Univ_Results[[1]]
+# PrePPQ_Sim_API1_Unnormalized_Random_a0_PoSMinimumSample[[i]] <- OCurve4Assay_Univ_Results[[2]]
+# }
+# saveRDS(PrePPQ_Sim_API1_Unnormalized_Random_a0_OCurvesAll, "Results/PrePPQ_Sim_API1_Unnormalized_Random_a0_OCurvesAll.rds")
+# saveRDS(PrePPQ_Sim_API1_Unnormalized_Random_a0_PoSMinimumSample, "Results/PrePPQ_Sim_API1_Unnormalized_Random_a0_PoSMinimumSample.rds")
+
+#==================================================================
+PrePPQ_Sim_API1_Unnormalized_Random_a0_OCurvesAll <- readRDS("Results/PrePPQ_Sim_API1_Unnormalized_Random_a0_OCurvesAll.rds")
+  PrePPQ_Sim_API1_Unnormalized_Random_a0_PoSMinimumSample <- readRDS("Results/PrePPQ_Sim_API1_Unnormalized_Random_a0_PoSMinimumSample.rds")
+
+```
+
+
+
+
+```{r, fig.width=16, fig.height=10}
+#==================================================================
+
+pdf(file = "Figures/Fig08.pdf", width = 14, height=10)
+grid.arrange(grobs = PrePPQ_Sim_API1_Unnormalized_Random_a0_OCurvesAll[c(1:4)], nrow=2)
+dev.off()
+
+```
+
+
+
+
+
+```{r}
+
+ComputePostSummary3 <- function(ListOfModels){
+  PostSamples=Intercept_0_Measures=Sd_b_0_Measures=Intercept_Measures=Sigma_Measures=Sd_b_Measures=a0_Measures=NULL
+ for(i in 1:(length(ListOfModels))){
+   PostSamples=extract(ListOfModels[[i]])
+   
+   Intercept_0_Measures <- c(Intercept_0_Measures, round(c(mean(PostSamples$Intercept_0), sd(PostSamples$Intercept_0), quantile(PostSamples$Intercept_0, probs = c(0.025, 0.975))),1))
+   
+   Sd_b_0_Measures <- c(Sd_b_0_Measures, round( c(median(PostSamples$sd_b_0), sd(PostSamples$sd_b_0),quantile(PostSamples$sd_b_0, probs = c(0.025, 0.975))),2))
+
+   Intercept_Measures <- c(Intercept_Measures, round(c(mean(PostSamples$Intercept), sd(PostSamples$Intercept),quantile(PostSamples$Intercept, probs = c(0.025, 0.975))),1))
+   
+   Sigma_Measures <- c(Sigma_Measures, round( c(median(PostSamples$sigma), sd(PostSamples$sigma),quantile(PostSamples$sigma, probs = c(0.025, 0.975))),2))
+   
+   Sd_b_Measures <- c(Sd_b_Measures, round( c(median(PostSamples$sd_b), sd(PostSamples$sd_b),quantile(PostSamples$sd_b, probs = c(0.025, 0.975))),2))
+   
+    a0_Measures <- c(a0_Measures, round( c(mean(PostSamples$a0), sd(PostSamples$a0), quantile(PostSamples$a0, probs = c(0.025, 0.975))),4))
+   
+ } 
+  return(cbind(Intercept_0_Measures, Sd_b_0_Measures,Intercept_Measures,Sigma_Measures,Sd_b_Measures,a0_Measures))
+}
+
+
+SampleSizeSel <- c()
+a0Int_Names <- c()
+for(i in 1:length(a0Int)){
+  SampleSizeSel <- c(SampleSizeSel,PrePPQ_Sim_API1_Unnormalized_Random_a0_PoSMinimumSample[[i]])
+  a0Int_Names = c(a0Int_Names, paste0(paste("Beta(", paste(a0Int[[i]], collapse = ';'), sep=""),")"))
+  }
+
+
+a0IntVec=c( "(1,1)", "(5,5)", "(10,10)", "(50,20)")
+
+ModelSummary <- cbind.data.frame(
+  Model=unlist(lapply(paste0("a0∼Beta",a0IntVec), function(x) c(x, NA, NA, NA))),
+  Term = rep(c("Estimate", "SD", "Lower", "Upper"), times = length(a0IntVec)),
+  ComputePostSummary3(PrePPQ_Sim_API1_Unnormalized_Random_a0),
+  SampleSize=unlist(lapply(SampleSizeSel, function(x) c(x, NA, NA, NA))))
+names(ModelSummary) <- c("Model", "Term", "Intercept_0", "Sd_b_0", "Intercept", "Sigma", "Sd_b","a0", "SampleSize")
+
+
+set_caption(flextable(ModelSummary), "The posterior summary statistics and the estimated number of samples for BLMM model using PBPP2", autonum = run_autonum(seq_id = "tab", bkm_all=TRUE))
+
+
+
+
+
+ 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Leveraging historical data using PBPP3
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 8.5 of the manuscript, where relevant figures and tables are also incorporated.**
+
+
+```{r}
+#==================================================================
+nsims <- 20000      # Number of simulations
+nburn <- 10000      # Number of burn-in iterations
+nthin <- 10         # Thinning interval
+nchains <- 3       # Number of chains
+
+#==================================================================
+#===> Fitting several stan models for random a0
+#==================================================================
+a0Int=list(c(1, 1), c(5, 5), c(10, 10), c(50,20))
+rstan_options(auto_write = TRUE)
+options(mc.cores = 6)
+
+PrePPQ0_Sim_API1 <- readRDS("Results/PrePPQ0_Sim_API1.rds")
+PrePPQ_Sim_API1 <- readRDS("Results/PrePPQ_Sim_API1.rds")
+
+
+# Historical data
+StanData_PartialBorrowing_Random_a0_Prior <- list(
+      # Historical data
+      N0 = standata(PrePPQ0_Sim_API1)$N,
+      Y0 = standata(PrePPQ0_Sim_API1)$Y,
+      N0_1 = standata(PrePPQ0_Sim_API1)$N_1,
+      M0_1 = standata(PrePPQ0_Sim_API1)$M_1,
+      J0_1 = standata(PrePPQ0_Sim_API1)$J_1,
+      Z0_1_1 = standata(PrePPQ0_Sim_API1)$Z_1_1
+      )
+# LMM_PartialBorrowing_Random_a0_Prior_2 <- stan_model("StanCodes/BLMM_PartialBorrowing_Normalized_Random_a0_Prior_2.stan")
+
+
+# C0Data <- Approximate_Ca0(StanData_Historical=StanData_PartialBorrowing_Random_a0_Prior, StanModel=LMM_PartialBorrowing_Random_a0_Prior_2,
+#                    NumberOfIterations = nsims,
+#                    Burnin = nburn,
+#                    Chains = nchains,
+#                    Max_treedepth = 15,
+#                    Thin = nthin,
+#                    Adapt_delta = 0.999,
+#                    a0_Increment = 0.05,
+#                    seed = seedNum)
+# write.csv(C0Data, file = "Results/C0Data.csv")
+
+
+
+
+
+#========================================
+### The approximately normalised prior
+#========================================
+C0Data <-  read.csv("Results/C0Data.csv")
+
+# plot(C0Data$a0_grid, C0Data$C_grid, type = "l")
+# points(C0Data$a0_grid, C0Data$C_grid, )
+
+  
+
+
+Fit_Approx_PartialBorrowing_Random_a0_2 <- function(C0Data, StanData, StanModel, verbose = FALSE, SeedNum){
+  indicator <- as.numeric(verbose)
+    cat("Doing a0~", "Beta()", "\n")
+  StanData$K <- length(C0Data$a0_grid)
+  StanData$a0_grid <- C0Data$a0_grid
+  StanData$C_grid <- C0Data$C_grid
+ 
+   StanModel_PartialBorrowing_Random_a0 <- sampling(StanModel,data = StanData, iter = 20000, warmup=10000, thin=10, chains=3, control = list(adapt_delta = 0.96, max_treedepth = 15), refresh = indicator * 500)
+  return(StanModel_PartialBorrowing_Random_a0)
+}
+
+# ===============================
+BLMM_PartialBorrowing_Normalized_Random_a0_2 <- stan_model("StanCodes/BLMM_PartialBorrowing_Normalized_Random_a0_2.stan")
+
+# StanModel_PartialBorrowing_Random_a0_2 <- list()
+# for(i in 1:length(a0Int)){
+#   StanData <- CreateStanData_Univ(BrmsModel_Historical=PrePPQ0_Sim_API1, BrmsModel_Current=PrePPQ_Sim_API1, a0=a0Int[[i]], random=TRUE)
+# 
+#   StanModel_PartialBorrowing_Random_a0_2[[i]] <- Fit_Approx_PartialBorrowing_Random_a0_2(C0Data=C0Data, StanData=StanData, StanModel=BLMM_PartialBorrowing_Normalized_Random_a0_2, verbose = FALSE, SeedNum=seedNum)
+# 
+# }
+# saveRDS(StanModel_PartialBorrowing_Random_a0_2, "FittedModelsInRstan/StanModel_PartialBorrowing_Random_a0_2.rds")
+
+# To visualize the results, uncomment the line below
+# launch_shinystan_nonblocking(StanModel_PartialBorrowing_Random_a0_2[[2]])
+
+
+### read saved Bayesian object:
+PrePPQ_Sim_API1_PartialBorrowing_Random_a0 <- readRDS("FittedModelsInRstan/StanModel_PartialBorrowing_Random_a0_2.rds")
+
+
+#==================================================================
+#===> Posterior summary measures and visualization
+#==================================================================
+
+# PrePPQ_Sim_API1_PartialBorrowing_Random_a0_OCurvesAll <- list()
+# PrePPQ_Sim_API1_PartialBorrowing_Random_a0_PoSMinimumSample <- list()
+# 
+# for(i in 1:length(a0Int)){
+#   OCurve4Assay_Univ_Results <- OCurve4Assay_Univ(StanModel=PrePPQ_Sim_API1_PartialBorrowing_Random_a0[[i]], ModelName=paste0(paste0("PartialBorrowing_Random_a0~Beta(", paste(a0Int[[i]], collapse = ';'), sep=""),")"), SampleSize=c(3:40), Specs=c(95.0, 105.0), Confidence=0.95, Coverage=0.99, SeedNum=seedNum)
+# 
+# PrePPQ_Sim_API1_PartialBorrowing_Random_a0_OCurvesAll[[i]] <- OCurve4Assay_Univ_Results[[1]]
+# PrePPQ_Sim_API1_PartialBorrowing_Random_a0_PoSMinimumSample[[i]] <- OCurve4Assay_Univ_Results[[2]]
+# }
+# saveRDS(PrePPQ_Sim_API1_PartialBorrowing_Random_a0_OCurvesAll, "Results/PrePPQ_Sim_API1_PartialBorrowing_Random_a0_OCurvesAll.rds")
+# saveRDS(PrePPQ_Sim_API1_PartialBorrowing_Random_a0_PoSMinimumSample, "Results/PrePPQ_Sim_API1_PartialBorrowing_Random_a0_PoSMinimumSample.rds")
+
+PrePPQ_Sim_API1_PartialBorrowing_Random_a0_OCurvesAll <- readRDS("Results/PrePPQ_Sim_API1_PartialBorrowing_Random_a0_OCurvesAll.rds")
+PrePPQ_Sim_API1_PartialBorrowing_Random_a0_PoSMinimumSample <- readRDS("Results/PrePPQ_Sim_API1_PartialBorrowing_Random_a0_PoSMinimumSample.rds")
+
+
+
+
+
+```
+
+
+
+
+```{r, fig.width=16, fig.height=10}
+#==================================================================
+pdf(file = "Figures/Fig09.pdf", width = 14, height=10)
+grid.arrange(grobs = PrePPQ_Sim_API1_PartialBorrowing_Random_a0_OCurvesAll[c(1:4)], nrow=2)
+dev.off()
+
+
+```
+
+```{r}
+
+ComputePostSummary3 <- function(ListOfModels){
+    PostSamples=Intercept_0_Measures=Sd_b_0_Measures=Intercept_Measures=Sigma_Measures=Sd_b_Measures=a0_Measures=NULL
+ for(i in 1:length(ListOfModels)){
+   PostSamples=extract(ListOfModels[[i]])
+   Intercept_0_Measures <- c(Intercept_0_Measures, round(c(mean(PostSamples$Intercept_0), sd(PostSamples$Intercept_0),quantile(PostSamples$Intercept_0, probs = c(0.025, 0.975))),1))
+   
+      Sd_b_0_Measures <- c(Sd_b_0_Measures, round( c(median(PostSamples$sd_b_0), sd(PostSamples$sd_b_0),quantile(PostSamples$sd_b_0, probs = c(0.025, 0.975))),2))
+
+   
+   Intercept_Measures <- c(Intercept_Measures, round(c(mean(PostSamples$Intercept), sd(PostSamples$Intercept),quantile(PostSamples$Intercept, probs = c(0.025, 0.975))),1))
+   
+   Sigma_Measures <- c(Sigma_Measures, round( c(median(PostSamples$sigma), sd(PostSamples$sigma),quantile(PostSamples$sigma, probs = c(0.025, 0.975))),2))
+   
+   Sd_b_Measures <- c(Sd_b_Measures, round( c(median(PostSamples$sd_b), sd(PostSamples$sd_b), quantile(PostSamples$sd_b, probs = c(0.025, 0.975))),2))
+   
+    a0_Measures <- c(a0_Measures, round( c(mean(PostSamples$a0), sd(PostSamples$a0), quantile(PostSamples$a0, probs = c(0.025, 0.975))),4))
+   
+ } 
+  return(cbind(Intercept_0_Measures, Sd_b_0_Measures,Intercept_Measures,Sigma_Measures,Sd_b_Measures,a0_Measures))
+}
+
+
+SampleSizeSel <- c()
+a0Int_Names <- c()
+for(i in 1:length(a0Int)){
+  SampleSizeSel <- c(SampleSizeSel, PrePPQ_Sim_API1_PartialBorrowing_Random_a0_PoSMinimumSample[[i]])
+  a0Int_Names = c(a0Int_Names, paste0(paste("Beta(", paste(a0Int[[i]], collapse = ';'), sep=""),")"))
+  }
+
+
+a0IntVec=c( "(1,1)", "(5,5)", "(10,10)", "(50,20)")
+ModelSummary <- cbind.data.frame(
+  Model=unlist(lapply(paste0("a0∼Beta",a0IntVec), function(x) c(x, NA, NA, NA))),
+  Term = rep(c("Estimate", "SD", "Lower", "Upper"), times = length(a0IntVec)),
+ComputePostSummary3(PrePPQ_Sim_API1_PartialBorrowing_Random_a0),
+  SampleSize=unlist(lapply(SampleSizeSel, function(x) c(x, NA, NA, NA))))
+names(ModelSummary) <- c("Model", "Term", "Intercept_0", "Sd_b_0", "Intercept", "Sigma", "Sd_b", "a0", "SampleSize")
+
+
+set_caption(flextable(ModelSummary), "The posterior summary statistics and the estimated number of samples for BLMM model using PBPP3", autonum = run_autonum(seq_id = "tab", bkm_all=TRUE))
+
+
+```
+
+
+
+## Simulation results
+**For a comprehensive understanding of this part of the RMD, readers are directed to Section 8.6 of the manuscript, where relevant figures are also incorporated. The code to run the simulation is provided in <span style="color: blue;">Simulation</span> folder with a file called <span style="color: blue;">CodeToRunSimulations.R</span>. Here, we only provided the code to visualize the simulation results.**
+
+```{r, include=FALSE}
+# Load necessary libraries
+packages <- c("data.table", "ggplot2", "grid", "ggthemes", "scales", "ggridges", "patchwork")
+lapply(packages, library, character.only = TRUE)
+
+```
+
+
+```{r}
+#==================================================================
+# Settings for visualization and importing simulation results
+#==================================================================
+
+#==================================================================
+# Preparing theme for plots
+theme_pub <- function(base_size = 14, base_family = "helvetica", ...) {
+  theme_foundation(base_size = base_size, base_family = base_family) +
+    theme(
+      plot.title = element_text(face = "bold", size = rel(1.2), hjust = 0.5),
+      text = element_text(),
+      panel.background = element_rect(colour = NA),
+      plot.background = element_rect(colour = NA),
+      panel.border = element_rect(colour = "black"),
+      axis.title = element_text(face = "bold", size = rel(1)),
+      axis.title.y = element_text(angle = 90, vjust = 2),
+      axis.title.x = element_text(vjust = -0.2),
+      axis.text = element_text(),
+      axis.line = element_line(colour = "black"),
+      axis.ticks = element_line(),
+      panel.grid.major = element_line(colour = "#f0f0f0"),
+      panel.grid.minor = element_blank(),
+      legend.key = element_rect(colour = NA),
+      legend.position = "bottom",
+      legend.direction = "horizontal",
+      legend.key.size = unit(1, "cm"),
+      legend.spacing = unit(0, "cm"),
+      legend.text = element_text(size = base_size),
+      legend.title = element_text(face = "italic"),
+      plot.margin = unit(c(10, 5, 5, 5), "mm"),
+      strip.background = element_rect(colour = "#f0f0f0", fill = "#f0f0f0"),
+      strip.text = element_text(face = "bold", size = base_size),
+      ...
+    )
+}
+
+scale_fill_Publication <- function(...) {
+  discrete_scale(
+    "fill", "Publication", manual_pal(values = c("#386cb0", "#fdb462", "#7fc97f", "#ef3b2c", "#662506", "#a6cee3", "#fb9a99", "#984ea3", "#ffff33")),
+    ...
+  )
+}
+
+scale_colour_Publication <- function(...) {
+  discrete_scale(
+    "colour", "Publication", manual_pal(values = c("#386cb0", "#fdb462", "#7fc97f", "#ef3b2c", "#662506", "#a6cee3", "#fb9a99", "#984ea3", "#ffff33")),
+    ...
+  )
+}
+
+
+#==================================================================
+# Import simulated csv files
+#==================================================================
+results_all <- NULL
+
+## read all data into a single data.table
+for (simulation in c("S1", "S2", "S3", "S4", "S5")) {
+  sim_results <- fread(file = sprintf("Simulation/results/%s_results.csv", simulation))
+  sim_results3 <- fread(file = sprintf("Simulation/results/%s_results_3.csv", simulation))
+  sim_results_all <- rbind(sim_results, sim_results3)
+  sim_results_all <- sim_results_all[abs(rhat - 1) < 0.05]
+  sim_results_all[, c("scenario", "prior_a0") := tstrsplit(scenario, split = "\\:\\s")]
+  sim_results_all[, c("name", "sigma_diff") := .(
+    switch(
+      simulation,
+      S1 = "S1: \u03c3\u2080=1.07, \u03c3=1.07",
+      S2 = "S2: \u03c3\u2080=1.16, \u03c3=0.99",
+      S3 = "S3: \u03c3\u2080=0.99, \u03c3=1.16",
+      S4 = "S4: \u03c3\u2080=0.2, \u03c3=4",
+      S5 = "S5: \u03c3\u2080=4, \u03c3=0.2"
+    ),
+    switch(
+      simulation,
+      S1 = 0,
+      S2 = 0.99 - 1.16,
+      S3 = 1.16 - 0.99,
+      S4 = 4 - 0.2,
+      S5 = 0.2 - 4
+    )
+  )]
+  results_all <- rbind(results_all, sim_results_all)
+}
+
+## for easier plotting
+results_all[, c("name", "scenario", "prior_a0") := .(
+  factor(name, levels = unique(name[order(sigma_diff)])),
+  factor(scenario, levels = sort(unique(scenario))),
+  factor(prior_a0, levels = stringr::str_sort(unique(prior_a0), numeric = TRUE))
+)]
+results_all <- split(results_all, by = "variable")
+
+
+```
+
+
+
+
+
+```{r}
+#==================================================================
+# Posterior summaries (Section 8.6.1 from the manuscript)
+#==================================================================
+#==================================================================
+## visualizations sigma
+#==================================================================
+results_sigma <- results_all[["sigma"]]
+
+#==================================================================
+## PBPP1
+#==================================================================
+plotdata1 <- results_sigma[scenario == "PBPP1"]
+true_sigma <- data.table(
+  name = levels(plotdata1[["name"]]),
+  sigma = c(0.2, 0.99, 1.07, 1.16, 4)
+)
+# Extract unique values
+unique_values <- unique(plotdata1$name)
+
+# Order the levels of "name" based on unique values
+plotdata1$name <- factor(plotdata1$name, levels = unique_values)
+# Sigma median
+plot_sigma_median <- ggplot(plotdata1, aes(x = prior_a0, y = median, fill = prior_a0)) +
+  facet_wrap(facets = "name", nrow = 1, scales = "free_y") +
+  geom_violin(scale = "width", color = "black") +
+  stat_summary(fun = median, geom = "point", shape = 23, size = 3, fill = "white", color = "black", position = position_dodge(width = 0.75)) +
+  labs(x = "Fixed a0", y = "\u03c3 (posterior medians)", fill = "Fixed a0", title = "PBPP1") +
+  scale_fill_Publication() +
+  geom_hline(data = true_sigma, aes(yintercept = sigma), lty = 2) +
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))#+ylim(range(c(plotdata1$median, true_sigma$sigma)))
+
+ggsave(
+  filename = "Figures/Fig10.png",
+  plot_sigma_median,
+  scale = 1,          # No scaling, use specified dimensions directly
+  width = 12,         # Set width to 10 inches
+  height = 6,       # Adjusted height to 6 inches for better aspect ratio
+  units = "in",       # Use inches for better compatibility
+  dpi = 300           # Set DPI for high resolution
+)
+
+#Sigma SD
+plot_sigma_sd <- ggplot(plotdata1, aes(x = prior_a0, y = sd, fill = prior_a0)) +
+  facet_wrap(facets = "name", nrow = 1, scales = "free_y") +
+  geom_violin(scale = "width", color = "black") +
+  stat_summary(fun = median, geom = "point", shape = 23, size = 3, fill = "white", color = "black", position = position_dodge(width = 0.75)) +
+  labs(x = "Fixed a0", y = "\u03c3 (posterior SDs)", fill = "Fixed a0", title = "PBPP1") +
+  scale_fill_Publication() +
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))#+ylim(range(plotdata1$sd))
+
+ggsave(
+  filename = "Figures/Fig16.png",
+  plot = plot_sigma_sd,
+  scale = 1,          # No scaling, use specified dimensions directly
+  width = 12,         # Set width to 12 inches
+  height = 6,       # Adjusted height to 6 inches for better aspect ratio
+  units = "in",       # Use inches for better compatibility
+  dpi = 300           # Set DPI for high resolution
+)
+```
+
+
+
+
+```{r}
+#==================================================================
+## PBPP2 + PBPP3
+#==================================================================
+#==================================================================
+## Visualizing mean and sd of a0 for PBPP2 + PBPP3 and simulation settings
+#==================================================================
+results_a0 <- results_all[["a0"]][grepl("PBPP[23]", scenario)]
+results_a0[, c("scenario", "prior_a0") := .(droplevels(scenario), droplevels(prior_a0))]
+
+# Extract unique values
+unique_values <- unique(results_a0$name)
+
+# Order the levels of "name" based on unique values
+results_a0$name <- factor(results_a0$name, levels = unique_values)
+
+plot_a0_mean <- ggplot(results_a0, aes(x = prior_a0, y = mean, fill = prior_a0)) +
+  facet_wrap(facets = c("scenario", "name"), nrow = 2, scales = "free_y") +
+  geom_violin(scale = "width", color = "black") +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white", color = "black", position = position_dodge(width = 0.75)) +
+  labs(x = "Prior a0", y = "a0 (posterior means)", fill = "Prior a0", title = "PBPP2, PBPP3") +
+  scale_fill_Publication() +
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) #+ ylim(range(results_a0$mean))
+
+ggsave(
+  filename = "Figures/Fig11.png",
+  plot = plot_a0_mean,
+  scale = 1,          # No scaling, use specified dimensions directly
+  width = 12,         # Set width to 12 inches
+  height = 8,         # Adjusted height to 8 inches
+  units = "in",       # Use inches for better compatibility
+  dpi = 300           # Set DPI for high resolution
+)
+
+plot_a0_sd <- ggplot(results_a0, aes(x = prior_a0, y = sd, fill = prior_a0)) +
+  facet_wrap(facets = c("scenario", "name"), nrow = 2, scales = "free_y") +
+  geom_violin(scale = "width", color = "black") +
+  stat_summary(fun = median, geom = "point", shape = 23, size = 3, fill = "white", color = "black", position = position_dodge(width = 0.75)) +
+  labs(x = "Prior a0", y = "a0 (posterior SDs)", fill = "Prior a0", title = "PBPP2, PBPP3") +
+  scale_fill_Publication() +
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) #+ ylim(range(results_a0$sd))
+
+ggsave(
+  filename = "Figures/Fig17.png",
+  plot = plot_a0_sd,
+  scale = 1,          # No scaling, using specified dimensions directly
+  width = 12,         # Set width to 12 inches
+  height = 8,         # Adjusted height to 8 inches
+  units = "in",       # Use inches for better compatibility
+  dpi = 300           # Set DPI for high resolution
+)
+
+```
+
+
+
+
+
+
+```{r}
+#==================================================================
+## PBPP2 + PBPP3
+#==================================================================
+plotdata23 <- results_sigma[scenario != "PBPP1"]
+plotdata23[, scenario := droplevels(scenario)]
+# Extract unique values
+unique_values <- unique(plotdata23$name)
+
+# Order the levels of "name" based on unique values
+plotdata23$name <- factor(plotdata23$name, levels = unique_values)
+
+
+plot_sigma_median <- ggplot(plotdata23, aes(x = prior_a0, y = median, fill = prior_a0)) +
+  facet_wrap(facets = c("scenario", "name"), nrow = 2, scales = "free_y") +
+  geom_violin(scale = "width", color = "black") +
+  stat_summary(fun = median, geom = "point", shape = 23, size = 3, fill = "white", color = "black", position = position_dodge(width = 0.75)) +
+  labs(x = "Prior a0", y = "\u03c3 (posterior medians)", fill = "Prior a0", title = "PBPP2, PBPP3") +
+  scale_fill_Publication() +
+  geom_hline(data = true_sigma, aes(yintercept = sigma), lty = 2) +
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))#+ylim(range(c(plotdata23$median, true_sigma$sigma)))
+
+ggsave(
+  filename = "Figures/Fig12.png",
+  plot = plot_sigma_median,
+  scale = 1,          # No scaling, use specified dimensions directly
+  width = 12,         # Set width to 12 inches
+  height = 8,         # Set height to 8 inches
+  units = "in",       # Use inches for better compatibility
+  dpi = 300           # Set DPI for better resolution
+)
+
+plot_sigma_sd <- ggplot(plotdata23, aes(x = prior_a0, y = sd, fill = prior_a0)) +
+  facet_wrap(facets = c("scenario", "name"), nrow = 2, scales = "free_y") +
+  geom_violin(scale = "width", color = "black") +
+  stat_summary(fun = median, geom = "point", shape = 23, size = 3, fill = "white", color = "black", position = position_dodge(width = 0.75)) +
+  labs(x = "Prior a0", y = "\u03c3 (posterior SDs)", fill = "Prior a0", title = "PBPP2, PBPP3") +
+  scale_fill_Publication() +
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))#+ylim(range(plotdata23$sd))
+
+ggsave(
+  filename = "Figures/Fig18.png",
+  plot = plot_sigma_sd,
+  scale = 1,          # No scaling, use specified dimensions directly
+  width = 12,         # Set width to 12 inches
+  height = 8,         # Set height to 8 inches
+  units = "in",       # Use inches for better compatibility
+  dpi = 300           # Set DPI for better resolution
+)
+
+```
+
+
+
+
+```{r}
+
+#==================================================================
+# Visualizing coverage/bias/credible intervals
+# (Section 8.6.2 in the manuscript) 
+#==================================================================
+
+results_sigma <- copy(results_all[["sigma"]])
+
+## merge with target sigma
+true_sigma <- data.table(
+    name = levels(results_sigma[["name"]]),
+    sigma = c(0.2, 0.99, 1.07, 1.16, 4)
+)
+results_sigma <- merge(results_sigma, true_sigma, by = "name", all.x = TRUE, sort = FALSE)
+results_sigma[, name := factor(name, levels = stringr::str_sort(true_sigma[["name"]]))]
+
+## calculate statistics
+results_sigma[, c("bias", "rmse", "coverage") := .(median - sigma, (median- sigma)^2, as.numeric(sigma > q5 & sigma < q95))]
+results_sigma[, c("bias", "rmse", "coverage") := .(mean(bias), sqrt(mean(rmse)), mean(coverage)), by = c("name", "scenario", "prior_a0")]
+results_sigma <- unique(results_sigma, by = c("name", "scenario", "prior_a0"))
+    
+#==================================================================
+## PBPP1
+#==================================================================
+
+plotdata1 <- results_sigma[scenario == "PBPP1"]
+
+
+
+
+#==================================================================
+#===> Combining all performance measure plots for PBPP1
+# Bias plot 
+plot_sigma_bias <- ggplot(plotdata1, aes(x = prior_a0, y = abs(bias), group = name)) +
+  geom_line(aes(color = name), linetype = "solid", size = 1) +
+  geom_point(aes(color = name)) +
+  labs(x = "", y = "Bias", color = "", title = "PBPP1") +  
+  scale_color_brewer(palette = "Set1") +
+  theme_pub(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
+  theme(legend.position = "none")  
+
+# Coverage plot
+plot_sigma_coverage <- ggplot(plotdata1, aes(x = prior_a0, y = coverage * 100, group = name)) +
+  geom_line(aes(color = name), linetype = "solid", size = 1) +
+  geom_point(aes(color = name)) + 
+  labs(x = "", y = "Coverage", color = "", title = "PBPP1") +  
+  scale_color_brewer(palette = "Set1") +
+  geom_hline(yintercept = 90, lty = 2) +  
+  theme_pub(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
+  theme(legend.position = "none") 
+
+# RMSE plot 
+plot_sigma_rmse <- ggplot(plotdata1, aes(x = prior_a0, y = rmse, group = name)) +
+  geom_line(aes(color = name), linetype = "solid", size = 1) +
+  geom_point(aes(color = name)) + 
+  labs(x = "Fixed a0", y = "RMSE", color = "", title = "PBPP1") +  
+  scale_color_brewer(palette = "Set1") +
+  theme_pub(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
+  theme(legend.position = "none") 
+
+
+legend_plot <-ggplot(plotdata1, aes(x = prior_a0, y = abs(bias), color = name)) +
+  geom_line(size = 1) +
+  #geom_point() +
+  labs(color = "Scenarios") +
+  scale_color_brewer(palette = "Set1") +
+  theme_void() +  # Remove all themes for a clean legend display
+  theme(legend.position = "left")
+
+# Combine all plots into one
+combined_plot <- plot_sigma_bias + plot_sigma_coverage + plot_sigma_rmse + legend_plot + plot_layout(ncol = 2)  
+
+# Save the combined plot
+ggsave(
+  filename = "Figures/Fig13.png",
+  plot = combined_plot,
+  scale = 1,
+  width = 10,       # Set width to 10 inches
+  height = 6,       # Set height to 6 inches
+  units = "in",     # Use inches for better compatibility
+  dpi = 300         # Set DPI for better resolution
+)
+
+
+#==================================================================
+## PBPP2 + PBPP3
+#==================================================================
+
+plotdata23 <- results_sigma[scenario != "PBPP1"]
+plotdata23[, scenario := droplevels(scenario)]
+
+#==================================================================
+#===> Combining all performance measure plots for PBPP2 and PBPP3
+
+plotdata23 <- results_sigma[scenario != "PBPP1"]
+plotdata23[, scenario := droplevels(scenario)]
+
+# Bias plot 
+plot_sigma_bias <- ggplot(plotdata23, aes(x = prior_a0, y = abs(bias), group = scenario)) +
+  facet_wrap(facets = c("name"), nrow = 1, scales = "free_y") +
+  geom_line(aes(color = scenario), linetype = "solid", size = 1) +
+  geom_point(aes(color = scenario)) +
+  labs(x = "", y = "Bias", color = "", title = "") +
+  scale_color_brewer(palette = "Set1") +
+  theme_pub(axis.text.x = element_blank()) +
+  theme(legend.position = "top", plot.margin = margin(4, 4, 4, 4))  
+
+
+
+# Coverage plot
+plot_sigma_coverage <- ggplot(plotdata23, aes(x = prior_a0, y = coverage * 100, group = scenario)) +
+  facet_wrap(facets = c("name"), nrow = 1, scales = "free_y") +
+  geom_line(aes(color = scenario), linetype = "solid", size = 1) +
+  geom_point(aes(color = scenario)) + 
+  labs(x = "", y = "Coverage", color = "", title = "") +
+  scale_color_brewer(palette = "Set1") +
+  geom_hline(yintercept = 90, lty = 2) +  
+  theme_pub(axis.text.x = element_blank()) +
+  theme(legend.position = "none", plot.margin = margin(4, 4, 4, 4))  
+
+
+# RMSE plot
+plot_sigma_rmse <- ggplot(plotdata23, aes(x = prior_a0, y = rmse, group = scenario)) +
+  facet_wrap(facets = c("name"), nrow = 1, scales = "free_y") +
+  geom_line(aes(color = scenario), linetype = "solid", size = 1) +
+  geom_point(aes(color = scenario)) + 
+  labs(x = "Prior a0", y = "RMSE", color = "", title = "") +
+  scale_color_brewer(palette = "Set1") +
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(legend.position = "none", plot.margin = margin(4, 4, 4, 4))  
+
+# Combine all plots into one
+combined_plot_23 <- plot_sigma_bias + plot_sigma_coverage + plot_sigma_rmse + 
+  plot_layout(ncol = 1)  
+
+# Save the combined plot
+ggsave(
+  filename = "Figures/Fig14.png",
+  plot = combined_plot_23,
+  scale = 1,
+  width = 12,       # Adjust width to 12 inches
+  height = 8,       # Adjust height to 8 inches
+  units = "in",     # Use inches for better compatibility
+  dpi = 300         # Set DPI for better resolution
+)
+
+```
+
+
+
+
