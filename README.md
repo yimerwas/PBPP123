@@ -14,9 +14,15 @@ This repository contains the data and scripts used for the manuscript titled **"
 
 In the field of pharmaceutical manufacturing, ensuring product quality and safety is paramount, particularly during the process validation stage. The power prior approach, known for its effectiveness in decision-making where historical data is available, holds significant promise for enhancing validation methodologies in this context. However, despite its potential, the application of power priors in process validation has been limited, particularly in the area of partial borrowing of historical information from early development batches.
 
-This manuscript seeks to address this notable gap by exploring the formulation and evaluation of three distinct classes of partial borrowing power priors (PBPP): PBPP1, a partial borrowing power prior with a fixed discounting parameter; PBPP2, an unnormalized partial borrowing power prior with a random discounting parameter; and PBPP3, a normalized partial borrowing power prior with a random discounting parameter. Each of these methodologies utilizes a Bayesian linear mixed model that effectively accounts for both intra-batch and inter-batch variability in drug product potency, thus providing a robust framework for integrating historical data into the process validation framework.
+This manuscript seeks to address this notable gap by exploring the formulation and evaluation of three distinct classes of partial borrowing power priors (PBPP):
 
-To illustrate the practical applicability of these approaches, we present a simulation study based on real drug product data. This simulation aims to elucidate how our proposed methods can leverage historical data to determine the optimal number of samples per batch required to accurately characterize intra-batch variability for process performance qualification (PPQ). In particular, we underscore the capabilities of PBPP3 in quantifying the discrepancies between historical and current data through its discounting parameter, offering valuable insights for decision-making processes within pharmaceutical manufacturing.
+ - **PBPP1**: a partial borrowing power prior with a fixed discounting parameter;
+ - **PBPP2**: an unnormalized partial borrowing power prior with a random discounting parameter; and
+ - **PBPP3**: a normalized partial borrowing power prior with a random discounting parameter.
+
+Each of these priors utilizes a Bayesian linear mixed model that effectively accounts for both intra-batch and inter-batch variability in drug product potency, thus providing a robust framework for integrating historical data into the process validation framework.
+
+To illustrate the practical applicability of these approaches, we present modeling results for simulated data sets based on real drug product data (for confidentiality reason). This study aims to elucidate how the different classes of partial borrowing power priors can leverage historical data and to determine the optimal number of samples per batch required to characterize intra-batch variability for process performance qualification (PPQ). Through extensive simulation, we underscore the capabilities of PBPP3 in quantifying the discrepancies between historical and current data through its discounting parameter, offering valuable insights for decision-making processes within pharmaceutical manufacturing.
 
 ## Files
 
