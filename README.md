@@ -6,7 +6,7 @@ This repository contains the data and scripts used for the manuscript titled "Fo
 
 - [Introduction](#introduction)
 - [Files](#files-overview)
-- [Data Description](#data-description)
+- [Data](#data-description)
 - [Scripts](#scripts)
 - [Contact](#contact)
 
