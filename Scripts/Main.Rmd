@@ -1510,10 +1510,19 @@ results_sigma <- merge(results_sigma, true_sigma, by = "name", all.x = TRUE, sor
 results_sigma[, name := factor(name, levels = stringr::str_sort(true_sigma[["name"]]))]
 
 ## calculate statistics
-results_sigma[, c("bias", "rmse", "coverage") := .(median - sigma, (median- sigma)^2, as.numeric(sigma > q5 & sigma < q95))]
-results_sigma[, c("bias", "rmse", "coverage") := .(mean(bias), sqrt(mean(rmse)), mean(coverage)), by = c("name", "scenario", "prior_a0")]
+results_sigma[, c("bias", "mse", "coverage") := .(median - sigma, (median- sigma)^2, as.numeric(sigma > q5 & sigma < q95))]
+results_sigma[, c("bias", "mse", "coverage",
+                  "mcse_bias", "mcse_mse",
+                  "mcse_coverage") 
+              := .(mean(bias), 
+                   mean(mse), 
+                   mean(coverage), 
+                   sd(bias)/sqrt(.N),
+              sd(mse)/sqrt(.N),
+              sqrt(mean(coverage)*(1-mean(coverage))/(.N))), by = c("name", "scenario", "prior_a0")]
 results_sigma <- unique(results_sigma, by = c("name", "scenario", "prior_a0"))
     
+
 #==================================================================
 ## PBPP1
 #==================================================================
@@ -1529,26 +1538,29 @@ plotdata1 <- results_sigma[scenario == "PBPP1"]
 plot_sigma_bias <- ggplot(plotdata1, aes(x = prior_a0, y = abs(bias), group = name)) +
   geom_line(aes(color = name), linetype = "solid", size = 1) +
   geom_point(aes(color = name)) +
+  geom_errorbar(aes(ymin = abs(bias) - mcse_bias, ymax = abs(bias) + mcse_bias, color = name), width = 0.2) +
   labs(x = "", y = "Bias", color = "", title = "PBPP1") +  
   scale_color_brewer(palette = "Set1") +
-  theme_pub(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
-  theme(legend.position = "none")  
+  theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(legend.position = "none")
 
 # Coverage plot
-plot_sigma_coverage <- ggplot(plotdata1, aes(x = prior_a0, y = coverage * 100, group = name)) +
+plot_sigma_coverage <- ggplot(plotdata1, aes(x = prior_a0, y = coverage, group = name)) +
   geom_line(aes(color = name), linetype = "solid", size = 1) +
   geom_point(aes(color = name)) + 
-  labs(x = "", y = "Coverage", color = "", title = "PBPP1") +  
+  geom_errorbar(aes(ymin = coverage - mcse_coverage, ymax = coverage + mcse_coverage, color = name), width = 0.2) +
+labs(x = "", y = "Coverage", color = "", title = "PBPP1") +  
   scale_color_brewer(palette = "Set1") +
-  geom_hline(yintercept = 90, lty = 2) +  
+  geom_hline(yintercept = 0.9, lty = 2) +  
   theme_pub(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
   theme(legend.position = "none") 
 
-# RMSE plot 
-plot_sigma_rmse <- ggplot(plotdata1, aes(x = prior_a0, y = rmse, group = name)) +
+# MSE plot 
+plot_sigma_mse <- ggplot(plotdata1, aes(x = prior_a0, y = mse, group = name)) +
   geom_line(aes(color = name), linetype = "solid", size = 1) +
   geom_point(aes(color = name)) + 
-  labs(x = "Fixed a0", y = "RMSE", color = "", title = "PBPP1") +  
+  geom_errorbar(aes(ymin = mse - mcse_mse, ymax = mse + mcse_mse, color = name), width = 0.2) +
+labs(x = "Fixed a0", y = "MSE", color = "", title = "PBPP1") +  
   scale_color_brewer(palette = "Set1") +
   theme_pub(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
   theme(legend.position = "none") 
@@ -1563,7 +1575,7 @@ legend_plot <-ggplot(plotdata1, aes(x = prior_a0, y = abs(bias), color = name)) 
   theme(legend.position = "left")
 
 # Combine all plots into one
-combined_plot <- plot_sigma_bias + plot_sigma_coverage + plot_sigma_rmse + legend_plot + plot_layout(ncol = 2)  
+combined_plot <- plot_sigma_bias + plot_sigma_coverage + plot_sigma_mse + legend_plot + plot_layout(ncol = 2)  
 
 # Save the combined plot
 ggsave(
@@ -1595,7 +1607,8 @@ plot_sigma_bias <- ggplot(plotdata23, aes(x = prior_a0, y = abs(bias), group = s
   facet_wrap(facets = c("name"), nrow = 1, scales = "free_y") +
   geom_line(aes(color = scenario), linetype = "solid", size = 1) +
   geom_point(aes(color = scenario)) +
-  labs(x = "", y = "Bias", color = "", title = "") +
+  geom_errorbar(aes(ymin = abs(bias) - mcse_bias, ymax = abs(bias) + mcse_bias, color = scenario), width = 0.2) +
+labs(x = "", y = "Bias", color = "", title = "") +
   scale_color_brewer(palette = "Set1") +
   theme_pub(axis.text.x = element_blank()) +
   theme(legend.position = "top", plot.margin = margin(4, 4, 4, 4))  
@@ -1603,29 +1616,31 @@ plot_sigma_bias <- ggplot(plotdata23, aes(x = prior_a0, y = abs(bias), group = s
 
 
 # Coverage plot
-plot_sigma_coverage <- ggplot(plotdata23, aes(x = prior_a0, y = coverage * 100, group = scenario)) +
+plot_sigma_coverage <- ggplot(plotdata23, aes(x = prior_a0, y = coverage, group = scenario)) +
   facet_wrap(facets = c("name"), nrow = 1, scales = "free_y") +
   geom_line(aes(color = scenario), linetype = "solid", size = 1) +
   geom_point(aes(color = scenario)) + 
-  labs(x = "", y = "Coverage", color = "", title = "") +
+  geom_errorbar(aes(ymin = coverage - mcse_coverage, ymax = coverage + mcse_coverage, color = scenario), width = 0.2) +
+labs(x = "", y = "Coverage", color = "", title = "") +
   scale_color_brewer(palette = "Set1") +
-  geom_hline(yintercept = 90, lty = 2) +  
+  geom_hline(yintercept = 0.9, lty = 2) +  
   theme_pub(axis.text.x = element_blank()) +
   theme(legend.position = "none", plot.margin = margin(4, 4, 4, 4))  
 
 
-# RMSE plot
-plot_sigma_rmse <- ggplot(plotdata23, aes(x = prior_a0, y = rmse, group = scenario)) +
+# MSE plot
+plot_sigma_mse <- ggplot(plotdata23, aes(x = prior_a0, y = mse, group = scenario)) +
   facet_wrap(facets = c("name"), nrow = 1, scales = "free_y") +
   geom_line(aes(color = scenario), linetype = "solid", size = 1) +
   geom_point(aes(color = scenario)) + 
-  labs(x = "Prior a0", y = "RMSE", color = "", title = "") +
+  geom_errorbar(aes(ymin = mse - mcse_mse, ymax = mse + mcse_mse, color = scenario), width = 0.2) +
+labs(x = "Prior a0", y = "MSE", color = "", title = "") +
   scale_color_brewer(palette = "Set1") +
   theme_pub(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
   theme(legend.position = "none", plot.margin = margin(4, 4, 4, 4))  
 
 # Combine all plots into one
-combined_plot_23 <- plot_sigma_bias + plot_sigma_coverage + plot_sigma_rmse + 
+combined_plot_23 <- plot_sigma_bias + plot_sigma_coverage + plot_sigma_mse + 
   plot_layout(ncol = 1)  
 
 # Save the combined plot
